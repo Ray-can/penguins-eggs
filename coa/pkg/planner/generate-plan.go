@@ -26,7 +26,8 @@ func GeneratePlan(
 	mode string,
 	luksPassphrase string,
 	fdtDir string,
-	fdtFile string) (string, []byte, error) {
+	fdtFile string,
+	excludeListPath string) (string, []byte, error) {
 
 	var plan OAPlan
 
@@ -102,6 +103,16 @@ func GeneratePlan(
 			}
 
 			if task.Name == "mksquashfs" {
+				if task.Params == nil {
+					task.Params = make(map[string]interface{})
+				}
+				// Single source of truth: the path actually written by
+				// GenerateExcludeList (it may honor EGGS_EXCLUDE_LIST_PATH or
+				// fall back to a temporary file), never the stale value that
+				// used to be hardcoded in the profile template.
+				if excludeListPath != "" {
+					task.Params["excludes_file"] = excludeListPath
+				}
 				comp := profile.Settings.Remaster.Compression
 				if comp.Algorithm != "" {
 					task.Params["algorithm"] = comp.Algorithm

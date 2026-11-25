@@ -366,6 +366,7 @@ func RunRemasterFlight(opts RemasterOptions) {
 		luksPassphrase,
 		fdtDir,
 		fdtFile,
+		excludeListPath,
 	)
 	if err != nil {
 		utils.Fatal("Unable to generate the flight plan: %v", err)

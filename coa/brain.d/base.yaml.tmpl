@@ -341,7 +341,9 @@ remaster:
     params:
       live_root: "{{ .LiveRoot }}"
       dest_file: "{{ .IsoDir }}/live/filesystem.squashfs"
-      excludes_file: "/tmp/coa/excludes.list"
+      # excludes_file is injected by coa's GeneratePlan with the path actually
+      # returned by GenerateExcludeList (honors EGGS_EXCLUDE_LIST_PATH and the
+      # temporary-file fallback), so it must not be hardcoded here.
 
 # ----------------------------------------------------------------------------
 # 17. DISTRO-SPECIFIC SQUASHFS HOOK

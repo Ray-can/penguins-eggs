@@ -11,8 +11,12 @@ package planner
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -134,6 +138,13 @@ func onSameDevice(path1, path2 string) bool {
 }
 
 func estimateExcludedKiB(excludeListPath string) uint64 {
+	return estimateExcludedKiBFrom("/", excludeListPath)
+}
+
+// estimateExcludedKiBFrom expands the mksquashfs -ef patterns against root
+// and sums the size of the matched files. The mksquashfs pattern dialect is
+// supported: shell wildcards (*, ?, []), extglob !(a|b) and doublestar **.
+func estimateExcludedKiBFrom(root string, excludeListPath string) uint64 {
 	if excludeListPath == "" {
 		return 0
 	}
@@ -142,63 +153,153 @@ func estimateExcludedKiB(excludeListPath string) uint64 {
 		return 0
 	}
 
-	var totalKiB uint64
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
+	var matches []string
+	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if strings.Contains(line, "*") || strings.Contains(line, "!") {
-			continue
+		matches = append(matches, expandExcludePattern(root, line)...)
+	}
+
+	// Only the filesystem that holds root contributes to the root usage we
+	// estimate. Skipping other devices also avoids pseudo-filesystems such as
+	// /proc and /sys, whose files can report absurd apparent sizes.
+	var rootStat unix.Stat_t
+	if err := unix.Stat(root, &rootStat); err != nil {
+		return 0
+	}
+
+	// Patterns may overlap (e.g. "root/*" and "root/.bashrc"): keep only the
+	// outermost matches and size every subtree once. Sorting by length makes
+	// ancestors come before their descendants.
+	sort.Slice(matches, func(i, j int) bool { return len(matches[i]) < len(matches[j]) })
+	var roots []string
+	for _, match := range matches {
+		covered := false
+		for _, r := range roots {
+			if match == r || strings.HasPrefix(match, r+string(os.PathSeparator)) {
+				covered = true
+				break
+			}
 		}
-		path := "/" + strings.TrimPrefix(line, "/")
-		info, err := os.Stat(path)
-		if err != nil {
-			continue
+		if !covered {
+			roots = append(roots, match)
 		}
-		if info.IsDir() {
-			totalKiB += dirSizeKiB(path)
-		} else {
-			totalKiB += uint64(info.Size()) / 1024
-		}
+	}
+
+	var totalKiB uint64
+	for _, r := range roots {
+		totalKiB += pathSizeKiBOnDevice(r, rootStat.Dev)
 	}
 	return totalKiB
 }
 
-func dirSizeKiB(path string) uint64 {
-	var stat unix.Statfs_t
-	if err := unix.Statfs(path, &stat); err != nil {
-		return 0
-	}
-	blockSize := uint64(stat.Bsize)
-	totalBytes := stat.Blocks * blockSize
-	freeBytes := stat.Bfree * blockSize
-	usedBytes := totalBytes - freeBytes
+// expandExcludePattern resolves a relative mksquashfs exclude pattern into the
+// concrete paths it matches below root. Non-existing paths are returned as-is
+// and later sized as zero, mirroring mksquashfs' "cannot stat, ignoring".
+func expandExcludePattern(root string, pattern string) []string {
+	segments := strings.Split(strings.Trim(pattern, "/"), "/")
+	var matches []string
 
-	// Se la directory è un mount point separato, il suo spazio usato
-	// è indipendente dal root e va contato come esclusione
-	var rootStat unix.Statfs_t
-	if unix.Statfs("/", &rootStat) != nil {
-		return 0
-	}
-	if stat.Fsid != rootStat.Fsid {
-		return usedBytes / 1024
+	var walk func(dir string, index int)
+	walk = func(dir string, index int) {
+		if index == len(segments) {
+			matches = append(matches, dir)
+			return
+		}
+		segment := segments[index]
+		switch {
+		case segment == "" || segment == ".":
+			walk(dir, index+1)
+		case segment == "**":
+			// Zero or more directory levels.
+			walk(dir, index+1)
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				return
+			}
+			for _, entry := range entries {
+				if entry.IsDir() {
+					walk(filepath.Join(dir, entry.Name()), index)
+				}
+			}
+		case !strings.ContainsAny(segment, "*?[") && !strings.Contains(segment, "!("):
+			walk(filepath.Join(dir, segment), index+1)
+		default:
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				return
+			}
+			for _, entry := range entries {
+				if matchExcludeSegment(segment, entry.Name()) {
+					walk(filepath.Join(dir, entry.Name()), index+1)
+				}
+			}
+		}
 	}
 
-	// Stessa partizione: usiamo una stima conservativa
-	// basata sulla dimensione tipica di queste directory
-	entries, err := os.ReadDir(path)
-	if err != nil {
+	walk(filepath.Clean(root), 0)
+	return matches
+}
+
+// matchExcludeSegment applies the mksquashfs wildcard dialect to one path
+// component. Whole-segment extglob alternatives such as !(themes|unicode.pf2)
+// are supported in addition to filepath.Match's *, ? and [] classes.
+func matchExcludeSegment(pattern, name string) bool {
+	if strings.HasPrefix(pattern, "!(") && strings.HasSuffix(pattern, ")") {
+		for _, alternative := range strings.Split(pattern[2:len(pattern)-1], "|") {
+			if ok, err := filepath.Match(alternative, name); err == nil && ok {
+				return false
+			}
+		}
+		return true
+	}
+	ok, err := filepath.Match(pattern, name)
+	return err == nil && ok
+}
+
+// pathSizeKiB recursively sums the regular files below root without following
+// symlinks, using the filesystem the path itself lives on.
+func pathSizeKiB(root string) uint64 {
+	var stat unix.Stat_t
+	if err := unix.Stat(root, &stat); err != nil {
 		return 0
 	}
-	var size uint64
-	for _, entry := range entries {
+	return pathSizeKiBOnDevice(root, stat.Dev)
+}
+
+// pathSizeKiBOnDevice sums the regular files below root that live on dev,
+// without following symlinks. It stops at other filesystems (e.g. /proc, /sys,
+// tmpfs or a USB disk mounted under /media) because those are not part of the
+// root filesystem usage we estimate.
+func pathSizeKiBOnDevice(root string, dev uint64) uint64 {
+	var totalBytes int64
+	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
 		info, err := entry.Info()
 		if err != nil {
-			continue
+			return nil
 		}
-		size += uint64(info.Size())
-	}
-	return size / 1024
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return nil
+		}
+		if stat.Dev != dev {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !info.IsDir() {
+			totalBytes += info.Size()
+		}
+		return nil
+	})
+	return uint64(totalBytes) / 1024
 }
