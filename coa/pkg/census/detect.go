@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"coa/pkg/utils"
 )
 
 func isIgnoredDesktopSession(s string) bool {
@@ -419,7 +421,7 @@ func DetectLiveSourceMode(squashfsPath string) (mode string, isCrypted bool, isC
 		if _, err := os.Stat(squashfsPath); err == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 			defer cancel()
-			out, err := exec.CommandContext(ctx, "unsquashfs", "-cat", squashfsPath, "etc/penguins-eggs.d/sibling.yaml").Output()
+			out, err := utils.ReadSquashfsFileContext(ctx, squashfsPath, "etc/penguins-eggs.d/sibling.yaml")
 			if err == nil {
 				content := strings.ToLower(string(out))
 				if strings.Contains(content, "crypted") {

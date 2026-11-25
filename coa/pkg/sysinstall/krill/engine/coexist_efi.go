@@ -49,7 +49,13 @@ func findEFIBinary(dir string) string {
 // bootloader for primaryID on espDevice into UEFI NVRAM using efibootmgr. It also ensures
 // any other Coexist EFI installations discovered on that ESP have valid NVRAM entries.
 func RegisterCoexistNVRAM(espMount, espDevice, primaryID string) error {
-	if !IsUEFI() {
+	return registerCoexistNVRAM(espMount, espDevice, primaryID, IsUEFI)
+}
+
+// registerCoexistNVRAM takes the firmware probe as a parameter so tests can
+// exercise the NVRAM logic on BIOS hosts too.
+func registerCoexistNVRAM(espMount, espDevice, primaryID string, uefi func() bool) error {
+	if !uefi() {
 		return nil
 	}
 	if espDevice == "" {

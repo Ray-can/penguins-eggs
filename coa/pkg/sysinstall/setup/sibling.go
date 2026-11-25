@@ -19,12 +19,11 @@ type Sibling struct {
 // the running host's identity: an installed standard host can deploy a clone.
 // Fail before starting the installer if the image or marker cannot be read.
 func readSourceSibling(source string) (Sibling, error) {
-	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
-	data, err := utils.ExecCapture("unsquashfs -cat " + quote(source) + " " + quote(siblingPath))
+	data, err := utils.ReadSquashfsFile(source, siblingPath)
 	if err != nil {
 		return Sibling{}, fmt.Errorf("read remaster mode from %s: %w", source, err)
 	}
-	return parseSibling([]byte(data))
+	return parseSibling(data)
 }
 
 func parseSibling(data []byte) (Sibling, error) {

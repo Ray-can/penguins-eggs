@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"coa/pkg/utils"
 )
 
 func getOrCreateUUID() (string, error) {
@@ -270,7 +272,7 @@ func DetectParentIDFromSource(squashfsPath string) string {
 			} else {
 				// 1. Try reading parent_id / live/parent_id / etc/penguins-eggs.d/parent-id from squashfs
 				for _, target := range []string{"parent_id", "live/parent_id", "etc/penguins-eggs.d/parent-id"} {
-					if out, err := exec.CommandContext(ctx, "unsquashfs", "-cat", squashfsPath, target).Output(); err == nil {
+					if out, err := utils.ReadSquashfsFileContext(ctx, squashfsPath, target); err == nil {
 						id := strings.TrimSpace(string(out))
 						if isValidUUID(id) {
 							return id
@@ -279,7 +281,7 @@ func DetectParentIDFromSource(squashfsPath string) string {
 				}
 
 				// 2. Try reading etc/penguins-eggs.d/sibling.yaml from squashfs
-				if out, err := exec.CommandContext(ctx, "unsquashfs", "-cat", squashfsPath, "etc/penguins-eggs.d/sibling.yaml").Output(); err == nil {
+				if out, err := utils.ReadSquashfsFileContext(ctx, squashfsPath, "etc/penguins-eggs.d/sibling.yaml"); err == nil {
 					for _, line := range strings.Split(string(out), "\n") {
 						line = strings.TrimSpace(line)
 						if strings.HasPrefix(line, "parent_id:") || strings.HasPrefix(line, "parent-id:") {

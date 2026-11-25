@@ -113,7 +113,7 @@ exit 0
 	// espDevice can be any fake path because lsblk is mocked
 	espDevice := "/dev/sdb1"
 
-	err := RegisterCoexistNVRAM(espMount, espDevice, "coe-3")
+	err := registerCoexistNVRAM(espMount, espDevice, "coe-3", func() bool { return true })
 	if err != nil {
 		t.Fatalf("RegisterCoexistNVRAM failed: %v", err)
 	}
